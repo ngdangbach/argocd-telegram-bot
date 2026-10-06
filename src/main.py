@@ -150,8 +150,8 @@ async def get_argocd_namespaces() -> Dict[str, List[str]]:
     return result
 
 
-async def get_synced_pods(app_name: str, namespace: str) -> List[str]:
-    """Lấy danh sách các Pod thực tế của các workload (Deployment/StatefulSet) được sync trong ArgoCD."""
+async def get_synced_pods(app_name: str, namespace: str, error_message: Optional[str] = None) -> List[str]:
+    """Lấy danh sách các Pod thực tế của các workload (Deployment/StatefulSet) thực sự được sync/cập nhật."""
     token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
     if not os.path.exists(token_file) or not app_name or not namespace:
@@ -164,12 +164,13 @@ async def get_synced_pods(app_name: str, namespace: str) -> List[str]:
 
         # 1. Truy vấn Application từ ArgoCD để lấy danh sách workload vừa được sync
         argo_url = f"https://kubernetes.default.svc/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/{app_name}"
-        synced_workloads = []
+        changed_workloads = []
+        all_workloads = []
+
         async with httpx.AsyncClient(verify=ca_file, timeout=5.0) as client:
             resp = await client.get(argo_url, headers=headers)
             if resp.status_code == 200:
                 app_data = resp.json()
-                # Ưu tiên lấy từ syncResult của lần sync này
                 sync_res = app_data.get("status", {}).get("operationState", {}).get("syncResult", {}).get("resources", [])
                 if not sync_res:
                     sync_res = app_data.get("status", {}).get("resources", [])
@@ -177,11 +178,20 @@ async def get_synced_pods(app_name: str, namespace: str) -> List[str]:
                 for res in sync_res:
                     kind = res.get("kind", "")
                     name = res.get("name", "")
-                    if kind in ["Deployment", "StatefulSet", "Rollout", "DaemonSet"] and name:
-                        if name not in synced_workloads:
-                            synced_workloads.append(name)
+                    msg = (res.get("message") or "").lower()
 
-            if not synced_workloads:
+                    if kind in ["Deployment", "StatefulSet", "Rollout", "DaemonSet"] and name:
+                        if name not in all_workloads:
+                            all_workloads.append(name)
+                        # Chỉ lấy những workload thực sự bị thay đổi (configured, created, updated)
+                        if any(kw in msg for kw in ["configured", "created", "updated"]):
+                            if name not in changed_workloads:
+                                changed_workloads.append(name)
+
+            # Ưu tiên lấy những workload thực sự thay đổi trong lần sync này.
+            # Nếu tất cả đều "unchanged" (ví dụ manual sync không đổi manifest), mới lấy all_workloads
+            target_workloads = changed_workloads if changed_workloads else all_workloads
+            if not target_workloads:
                 return []
 
             # 2. Truy vấn danh sách Pods trong namespace đích để map tên Pod thực tế
@@ -193,12 +203,18 @@ async def get_synced_pods(app_name: str, namespace: str) -> List[str]:
                 for p in pod_data.get("items", []):
                     p_name = p.get("metadata", {}).get("name", "")
                     phase = p.get("status", {}).get("phase", "")
-                    if p_name and phase in ["Running", "Pending", "ContainerCreating"]:
+                    if p_name and phase in ["Running", "Pending", "ContainerCreating", "CrashLoopBackOff"]:
                         all_pods.append(p_name)
+
+                # Nếu có thông báo lỗi chỉ đích danh 1 pod (vd: "in pod backend-dev-6bc58b755c-hgs8p")
+                if error_message:
+                    for p in all_pods:
+                        if p.lower() in error_message.lower():
+                            return [p]
 
                 # Ghép workload vừa sync với pod thực tế tương ứng
                 matched_pods = []
-                for w in synced_workloads:
+                for w in target_workloads:
                     for p in all_pods:
                         if p.startswith(f"{w}-"):
                             if p not in matched_pods:
@@ -460,7 +476,7 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
             pod_list.extend([p.strip() for p in payload.pods.split(",") if p.strip()])
 
     if not pod_list and app_name and namespace:
-        pod_list = await get_synced_pods(app_name, namespace)
+        pod_list = await get_synced_pods(app_name, namespace, error_message=message)
 
     # Format message HTML
     short_rev = revision[:7] if len(revision) >= 7 else revision
