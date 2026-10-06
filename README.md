@@ -32,6 +32,7 @@ Bot tiếp nhận thông báo triển khai từ **ArgoCD Notifications** và t�
 ## 🚀 Hướng dẫn triển khai từng bước
 
 ### Bước 1: Tạo Telegram Bot
+
 1. Mở Telegram, chat với **[@BotFather](https://t.me/BotFather)**.
 2. Gõ `/newbot` và đặt tên cho bot (ví dụ: `Thinklabs ArgoCD Bot` - `thinklabs_ih1_argocd_bot`).
 3. Lưu lại **HTTP API Token** (dạng `1234567890:ABCdefGHI...`).
@@ -39,6 +40,7 @@ Bot tiếp nhận thông báo triển khai từ **ArgoCD Notifications** và t�
    - Chat với `@BotFather` -> `/setprivacy` -> Chọn bot -> Chọn `Disable`.
 
 ### Bước 2: Build & Push Docker Image
+
 Chạy lệnh build container từ thư mục này:
 
 ```bash
@@ -54,6 +56,7 @@ docker push ghcr.io/thinklabsdev/argocd-telegram-bot:latest
 ### Bước 3: Cấu hình Secret & Deploy lên Cluster `ih1`
 
 1. Sửa file `manifests/secret.yaml` với token bot bạn vừa tạo:
+
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -65,18 +68,21 @@ stringData:
   TELEGRAM_BOT_TOKEN: "1234567890:ABCdefGHI..." # Token của bạn
 ```
 
-2. Áp dụng manifests vào cluster:
+1. Áp dụng manifests vào cluster:
+
 ```bash
 kubectl apply -k manifests/
 ```
 
-3. Kiểm tra pod hoạt động:
+1. Kiểm tra pod hoạt động:
+
 ```bash
 kubectl get pods -n argocd -l app=argocd-telegram-bot
 # Trạng thái 1/1 Running
 ```
 
 ### Bước 4: Kích hoạt Webhook trên ArgoCD Notifications
+
 Áp dụng cấu hình patch webhook vào ConfigMap của ArgoCD:
 
 ```bash
@@ -84,6 +90,7 @@ kubectl apply -f argocd-notifications-patch.yaml
 ```
 
 Khởi động lại notifications controller để nhận cấu hình mới:
+
 ```bash
 kubectl rollout restart deployment argocd-notifications-controller -n argocd
 ```
@@ -95,7 +102,7 @@ kubectl rollout restart deployment argocd-notifications-controller -n argocd
 Sau khi thêm Bot vào Group Telegram hoặc Forum Topic:
 
 | Lệnh | Ý nghĩa | Ví dụ |
-|---|---|---|
+| --- | --- | --- |
 | `/namespaces` (hoặc `/ns`) | Liệt kê tất cả các namespace đang có trên ArgoCD (kèm số app) | `/namespaces` |
 | `/sub <namespace>` | Nhận toàn bộ thông báo (thành công + thất bại) của namespace | `/sub owlla-dev` |
 | `/sub <namespace> failed` | **Chỉ** nhận thông báo khi deploy thất bại hoặc health degraded | `/sub owlla-dev failed` |
@@ -119,13 +126,15 @@ kubectl port-forward svc/argocd-telegram-bot -n argocd 8080:8080
 ```
 
 ### 1. Test tự động lấy Pod từ ArgoCD (Khuyên dùng)
+
 Bot sẽ tự động truy vấn ArgoCD và Kubernetes để lấy đúng các Pod vừa được sync:
+
 ```bash
 curl -X POST http://localhost:8080/webhook/argocd \
   -H "Content-Type: application/json" \
   -d '{
-    "app_name": "ew-dev",
-    "namespace": "ew-dev",
+    "app_name": "ew",
+    "namespace": "ew",
     "project": "default",
     "sync_status": "Synced",
     "health_status": "Healthy",
@@ -135,7 +144,9 @@ curl -X POST http://localhost:8080/webhook/argocd \
 ```
 
 ### 2. Test chỉ định cụ thể Pod Name
+
 Nếu muốn chỉ định rõ pod cần hiển thị trong thông báo:
+
 ```bash
 curl -X POST http://localhost:8080/webhook/argocd \
   -H "Content-Type: application/json" \
@@ -152,7 +163,9 @@ curl -X POST http://localhost:8080/webhook/argocd \
 ```
 
 ### 3. Test thông báo lỗi Sync / Pod Degraded (🚨)
+
 Kiểm tra thông báo cảnh báo đỏ khi triển khai thất bại:
+
 ```bash
 curl -X POST http://localhost:8080/webhook/argocd \
   -H "Content-Type: application/json" \
