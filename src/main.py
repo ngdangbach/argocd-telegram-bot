@@ -179,7 +179,6 @@ def is_infra_workload(workload_name: str, app_name: str) -> bool:
                 return True
     return False
 
-
 async def get_synced_pods(app_name: str, namespace: str, error_message: Optional[str] = None) -> List[str]:
     """Lấy danh sách các Pod thực tế của các workload (Deployment/StatefulSet) thực sự được sync/cập nhật."""
     token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
