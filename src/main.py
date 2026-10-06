@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import html
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
@@ -149,42 +150,64 @@ async def get_argocd_namespaces() -> Dict[str, List[str]]:
     return result
 
 
-async def get_pods_for_app(namespace: str, app_name: Optional[str] = None) -> List[str]:
-    """Lấy danh sách các Pod đang chạy trong namespace của ứng dụng."""
+async def get_synced_pods(app_name: str, namespace: str) -> List[str]:
+    """Lấy danh sách các Pod thực tế của các workload (Deployment/StatefulSet) được sync trong ArgoCD."""
     token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-    if not os.path.exists(token_file) or not namespace:
+    if not os.path.exists(token_file) or not app_name or not namespace:
         return []
 
     try:
         with open(token_file, "r") as f:
             token = f.read().strip()
-        url = f"https://kubernetes.default.svc/api/v1/namespaces/{namespace}/pods"
-        async with httpx.AsyncClient(verify=ca_file, timeout=4.0) as client:
-            resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Truy vấn Application từ ArgoCD để lấy danh sách workload vừa được sync
+        argo_url = f"https://kubernetes.default.svc/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/{app_name}"
+        synced_workloads = []
+        async with httpx.AsyncClient(verify=ca_file, timeout=5.0) as client:
+            resp = await client.get(argo_url, headers=headers)
             if resp.status_code == 200:
-                data = resp.json()
+                app_data = resp.json()
+                # Ưu tiên lấy từ syncResult của lần sync này
+                sync_res = app_data.get("status", {}).get("operationState", {}).get("syncResult", {}).get("resources", [])
+                if not sync_res:
+                    sync_res = app_data.get("status", {}).get("resources", [])
+
+                for res in sync_res:
+                    kind = res.get("kind", "")
+                    name = res.get("name", "")
+                    if kind in ["Deployment", "StatefulSet", "Rollout", "DaemonSet"] and name:
+                        if name not in synced_workloads:
+                            synced_workloads.append(name)
+
+            if not synced_workloads:
+                return []
+
+            # 2. Truy vấn danh sách Pods trong namespace đích để map tên Pod thực tế
+            pod_url = f"https://kubernetes.default.svc/api/v1/namespaces/{namespace}/pods"
+            resp_pod = await client.get(pod_url, headers=headers)
+            if resp_pod.status_code == 200:
+                pod_data = resp_pod.json()
                 all_pods = []
+                for p in pod_data.get("items", []):
+                    p_name = p.get("metadata", {}).get("name", "")
+                    phase = p.get("status", {}).get("phase", "")
+                    if p_name and phase in ["Running", "Pending", "ContainerCreating"]:
+                        all_pods.append(p_name)
+
+                # Ghép workload vừa sync với pod thực tế tương ứng
                 matched_pods = []
-                app_clean = (app_name or "").lower().replace("-dev", "").replace("-prod", "").replace("-staging", "")
+                for w in synced_workloads:
+                    for p in all_pods:
+                        if p.startswith(f"{w}-"):
+                            if p not in matched_pods:
+                                matched_pods.append(p)
+                            break
 
-                for item in data.get("items", []):
-                    p_name = item.get("metadata", {}).get("name", "")
-                    if not p_name:
-                        continue
-                    phase = item.get("status", {}).get("phase", "")
-                    if phase not in ["Running", "Pending", "CrashLoopBackOff"]:
-                        continue
-
-                    all_pods.append(p_name)
-                    # Ưu tiên các pod có tên khớp với app_name
-                    if app_name and (app_name.lower() in p_name.lower() or (app_clean and app_clean in p_name.lower())):
-                        matched_pods.append(p_name)
-
-                result = matched_pods if matched_pods else all_pods
-                return sorted(result)
+                return sorted(matched_pods)
     except Exception as e:
-        logger.warning(f"Error fetching pods for namespace {namespace}: {e}")
+        logger.warning(f"Error getting synced pods for app {app_name} in {namespace}: {e}")
     return []
 
 
@@ -436,8 +459,8 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
         elif isinstance(payload.pods, str):
             pod_list.extend([p.strip() for p in payload.pods.split(",") if p.strip()])
 
-    if not pod_list and namespace:
-        pod_list = await get_pods_for_app(namespace, app_name)
+    if not pod_list and app_name and namespace:
+        pod_list = await get_synced_pods(app_name, namespace)
 
     # Format message HTML
     short_rev = revision[:7] if len(revision) >= 7 else revision
@@ -452,13 +475,10 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
 
     if pod_list:
         if len(pod_list) == 1:
-            lines.append(f"🐳 <b>Pod:</b> <code>{html.escape(pod_list[0])}</code>")
-        elif len(pod_list) <= 3:
-            pods_formatted = ", ".join([f"<code>{html.escape(p)}</code>" for p in pod_list])
-            lines.append(f"🐳 <b>Pods:</b> {pods_formatted}")
+            lines.append(f"🐳 <b>Pod vừa sync:</b> <code>{html.escape(pod_list[0])}</code>")
         else:
-            pods_formatted = ", ".join([f"<code>{html.escape(p)}</code>" for p in pod_list[:3]])
-            lines.append(f"🐳 <b>Pods:</b> {pods_formatted} <i>(+{len(pod_list)-3} pods)</i>")
+            pods_formatted = ", ".join([f"<code>{html.escape(p)}</code>" for p in pod_list])
+            lines.append(f"🐳 <b>Pods vừa sync:</b> {pods_formatted}")
 
     lines.extend([
         f"📁 <b>Project:</b> <code>{html.escape(project)}</code>",

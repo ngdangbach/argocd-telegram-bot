@@ -112,13 +112,47 @@ Sau khi thêm Bot vào Group Telegram hoặc Forum Topic:
 
 ## 🧪 Kiểm tra thử nghiệm (Manual Test)
 
-Bạn có thể test gửi trực tiếp 1 event giả lập từ trong cluster hoặc port-forward:
+Bạn có thể test gửi trực tiếp event giả lập từ trong cluster hoặc mở port-forward trên máy cá nhân:
 
 ```bash
 kubectl port-forward svc/argocd-telegram-bot -n argocd 8080:8080
 ```
 
-Gửi cURL:
+### 1. Test tự động lấy Pod từ ArgoCD (Khuyên dùng)
+Bot sẽ tự động truy vấn ArgoCD và Kubernetes để lấy đúng các Pod vừa được sync:
+```bash
+curl -X POST http://localhost:8080/webhook/argocd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app_name": "ew-dev",
+    "namespace": "ew-dev",
+    "project": "default",
+    "sync_status": "Synced",
+    "health_status": "Healthy",
+    "revision": "8a60ee1",
+    "message": "Manual test trigger from local curl"
+  }'
+```
+
+### 2. Test chỉ định cụ thể Pod Name
+Nếu muốn chỉ định rõ pod cần hiển thị trong thông báo:
+```bash
+curl -X POST http://localhost:8080/webhook/argocd \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app_name": "ew-dev",
+    "namespace": "ew-dev",
+    "project": "default",
+    "sync_status": "Synced",
+    "health_status": "Healthy",
+    "pod_name": "ew-webview-dev-559cc98866-htndz",
+    "revision": "8a60ee1",
+    "message": "Deploy update webview only"
+  }'
+```
+
+### 3. Test thông báo lỗi Sync / Pod Degraded (🚨)
+Kiểm tra thông báo cảnh báo đỏ khi triển khai thất bại:
 ```bash
 curl -X POST http://localhost:8080/webhook/argocd \
   -H "Content-Type: application/json" \
@@ -126,10 +160,11 @@ curl -X POST http://localhost:8080/webhook/argocd \
     "app_name": "owlla-dev",
     "namespace": "owlla-dev",
     "project": "default",
-    "sync_status": "Synced",
-    "health_status": "Healthy",
-    "revision": "a1b2c3d4e5",
-    "message": "Manual test trigger from local curl"
+    "sync_status": "Failed",
+    "health_status": "Degraded",
+    "revision": "a1b2c3d",
+    "message": "Back-off restarting failed container backend-dev in pod backend-dev-6bc58b755c-hgs8p"
   }'
 ```
-Bot sẽ lập tức gửi tin nhắn thông báo vào các group đã gõ lệnh `/sub owlla-dev`!
+
+> 💡 **Kết quả:** Bot sẽ lập tức định tuyến gửi tin nhắn thông báo đến tất cả các Group Telegram hoặc Topic đã gõ lệnh `/sub <namespace>` tương ứng!
