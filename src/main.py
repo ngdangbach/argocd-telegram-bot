@@ -489,20 +489,23 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
     # Biểu tượng trạng thái
     if is_failed:
         header_icon = "🚨"
-        status_title = "DEPLOYMENT / SYNC THẤT BẠI"
+        status_title = "Deployment thất bại"
+        status_icon = "❌"
     elif sync_status.lower() == "synced" and health_status.lower() == "healthy":
         header_icon = "🚀"
-        status_title = "DEPLOYMENT THÀNH CÔNG"
+        status_title = "Deployment thành công"
+        status_icon = "✅"
     else:
         header_icon = "🔄"
-        status_title = f"CẬP NHẬT TRẠNG THÁI ({sync_status})"
+        status_title = f"Cập nhật trạng thái ({sync_status})"
+        status_icon = "🔄"
 
     # Lấy thông tin Pods từ payload hoặc tự động query K8s API
     pod_list = []
     if payload.pod_name:
         pod_list.append(str(payload.pod_name).strip())
     elif payload.pod:
-        pod_list.append(str(payload.pod).strip())
+        pod_list.append(str(payload.pod_name or payload.pod).strip())
     elif payload.pods:
         if isinstance(payload.pods, list):
             pod_list.extend([str(p).strip() for p in payload.pods if p])
@@ -513,35 +516,27 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
         pod_list = await get_synced_pods(app_name, namespace, error_message=message)
 
     # Format message HTML
-    short_rev = revision[:7] if len(revision) >= 7 else revision
     argo_app_url = f"{ARGOCD_URL}/applications/{app_name}"
 
     lines = [
-        f"{header_icon} <b>ArgoCD ih1: {status_title}</b>",
+        f"{header_icon} <b>ArgoCD ih1 · {status_title}</b>",
         "",
-        f"📦 <b>Ứng dụng:</b> <code>{html.escape(app_name)}</code>",
         f"🏷 <b>Namespace:</b> <code>{html.escape(namespace)}</code>",
+        f"{status_icon} <b>Status:</b> {html.escape(sync_status)} · {html.escape(health_status)}",
     ]
 
     if pod_list:
-        if len(pod_list) == 1:
-            lines.append(f"🐳 <b>Pod vừa sync:</b> <code>{html.escape(pod_list[0])}</code>")
-        else:
-            pods_formatted = ", ".join([f"<code>{html.escape(p)}</code>" for p in pod_list])
-            lines.append(f"🐳 <b>Pods vừa sync:</b> {pods_formatted}")
+        pod_title = "Pod đã cập nhật" if len(pod_list) == 1 else "Pods đã cập nhật"
+        lines.append("")
+        lines.append(f"📦 <b>{pod_title}:</b>")
+        for p in pod_list:
+            lines.append(f"<code>{html.escape(p)}</code>")
 
-    lines.extend([
-        f"📁 <b>Project:</b> <code>{html.escape(project)}</code>",
-        f"⚙️ <b>Sync:</b> <code>{html.escape(sync_status)}</code> | 🩺 <b>Health:</b> <code>{html.escape(health_status)}</code>"
-    ])
-
-    if short_rev:
-        lines.append(f"🔖 <b>Commit:</b> <code>{html.escape(short_rev)}</code>")
-
-    if message and message.strip() and message.strip().lower() != "none":
+    if is_failed and message and message.strip() and message.strip().lower() != "none":
         clean_msg = message.strip()
         if len(clean_msg) > 300:
             clean_msg = clean_msg[:300] + "..."
+        lines.append("")
         lines.append(f"📝 <b>Chi tiết:</b>\n<pre>{html.escape(clean_msg)}</pre>")
 
     msg_text = "\n".join(lines)

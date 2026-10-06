@@ -6,32 +6,49 @@ metadata:
   name: argocd-notifications-cm
   namespace: argocd
 data:
-  # Cấu hình Webhook trỏ đến service của Telegram Bot
+  # 1. Cấu hình Webhook Service trỏ đến Telegram Bot
   service.webhook.telegram-bot: |
     url: http://argocd-telegram-bot.argocd.svc.cluster.local:8080/webhook/argocd
     headers:
       - name: Content-Type
         value: application/json
-    body: |
-      {
-        "app_name": "{{.app.metadata.name}}",
-        "namespace": "{{.app.spec.destination.namespace}}",
-        "project": "{{.app.spec.project}}",
-        "sync_status": "{{.app.status.sync.status}}",
-        "health_status": "{{.app.status.health.status}}",
-        "revision": "{{.app.status.sync.revision}}",
-        "message": "{{.app.status.operationState.message}}",
-        "phase": "{{.app.status.operationState.phase}}"
-      }
 
-  # Tự động gửi tất cả sự kiện sang bot để bot tự phân luồng theo namespace
+  # 2. Template định nghĩa payload gửi qua Webhook
+  template.app-deployed: |
+    webhook:
+      telegram-bot:
+        method: POST
+        body: |
+          {
+            "app_name": {{ .app.metadata.name | toJson }},
+            "namespace": {{ .app.spec.destination.namespace | toJson }},
+            "project": {{ .app.spec.project | toJson }},
+            "sync_status": {{ .app.status.sync.status | toJson }},
+            "health_status": {{ .app.status.health.status | toJson }},
+            "revision": {{ .app.status.sync.revision | toJson }},
+            "message": {{ .app.status.operationState.message | toJson }},
+            "phase": {{ .app.status.operationState.phase | toJson }}
+          }
+
+  # 3. Triggers kích hoạt khi deploy xong hoặc lỗi
+  trigger.on-deployed: |
+    - when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+      oncePer: app.status.sync.revision
+      send: [app-deployed]
+
+  trigger.on-sync-failed: |
+    - when: app.status.operationState != nil and app.status.operationState.phase in ['Error', 'Failed']
+      send: [app-deployed]
+
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send: [app-deployed]
+
+  # 4. Global Subscriptions gửi toàn bộ sự kiện tới webhook để Bot tự xử lý lọc namespace
   subscriptions: |
     - recipients:
         - telegram-bot
-      trigger: on-deployed
-    - recipients:
-        - telegram-bot
-      trigger: on-sync-failed
-    - recipients:
-        - telegram-bot
-      trigger: on-health-degraded
+      triggers:
+        - on-deployed
+        - on-sync-failed
+        - on-health-degraded

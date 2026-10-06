@@ -22,7 +22,7 @@ spec:
         - name: ghcr-credentials
       containers:
         - name: bot
-          image: ghcr.io/ngdangbach/argocd-telegram-bot:sha-37d1634
+          image: ghcr.io/ngdangbach/argocd-telegram-bot:sha-2ebef17
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
