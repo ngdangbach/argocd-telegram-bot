@@ -197,7 +197,7 @@ HELP_TEXT = """🤖 <b>ArgoCD Notification Bot (ih1)</b>
 • <code>/namespaces</code> (hoặc <code>/ns</code>) : Xem các namespace đang có trên ArgoCD.
 • <code>/sub &lt;namespace&gt;</code> : Đăng ký nhận toàn bộ thông báo của namespace.
 • <code>/sub &lt;namespace&gt; failed</code> : Chỉ nhận thông báo khi deploy thất bại/lỗi.
-• <code>/sub all</code> : Nhận thông báo của <b>tất cả</b> namespaces (DevOps).
+• <code>/sub all</code> : Nhận thông báo của <b>tất cả</b> namespaces.
 • <code>/unsub &lt;namespace&gt;</code> : Hủy nhận thông báo của namespace.
 • <code>/unsub all</code> : Hủy toàn bộ đăng ký trong chat này.
 • <code>/list</code> : Xem các namespace chat/topic này đang theo dõi.
