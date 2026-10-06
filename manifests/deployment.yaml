@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-telegram-bot
+  namespace: argocd
+  labels:
+    app: argocd-telegram-bot
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # Dùng SQLite cần Recreate để tránh 2 pod cùng mount PVC đồng thời
+  selector:
+    matchLabels:
+      app: argocd-telegram-bot
+  template:
+    metadata:
+      labels:
+        app: argocd-telegram-bot
+    spec:
+      containers:
+        - name: bot
+          image: ghcr.io/thinklabsdev/argocd-telegram-bot:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: argocd-telegram-bot-secret
+                  key: TELEGRAM_BOT_TOKEN
+            - name: ARGOCD_URL
+              value: "https://argocd.internal.ih1.thinklabs.com.vn"
+            - name: DB_PATH
+              value: "/data/subscriptions.db"
+          volumeMounts:
+            - name: data-volume
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: argocd-telegram-bot-pvc

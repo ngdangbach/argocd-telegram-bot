@@ -1,0 +1,37 @@
+# Áp dụng cấu hình này vào ConfigMap `argocd-notifications-cm` trên cluster ih1
+# Lệnh: kubectl apply -f argocd-notifications-patch.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # Cấu hình Webhook trỏ đến service của Telegram Bot
+  service.webhook.telegram-bot: |
+    url: http://argocd-telegram-bot.argocd.svc.cluster.local:8080/webhook/argocd
+    headers:
+      - name: Content-Type
+        value: application/json
+    body: |
+      {
+        "app_name": "{{.app.metadata.name}}",
+        "namespace": "{{.app.spec.destination.namespace}}",
+        "project": "{{.app.spec.project}}",
+        "sync_status": "{{.app.status.sync.status}}",
+        "health_status": "{{.app.status.health.status}}",
+        "revision": "{{.app.status.sync.revision}}",
+        "message": "{{.app.status.operationState.message}}",
+        "phase": "{{.app.status.operationState.phase}}"
+      }
+
+  # Tự động gửi tất cả sự kiện sang bot để bot tự phân luồng theo namespace
+  subscriptions: |
+    - recipients:
+        - telegram-bot
+      trigger: on-deployed
+    - recipients:
+        - telegram-bot
+      trigger: on-sync-failed
+    - recipients:
+        - telegram-bot
+      trigger: on-health-degraded
