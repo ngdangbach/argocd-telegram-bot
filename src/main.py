@@ -14,7 +14,9 @@ from database import (
     add_subscription,
     remove_subscription,
     list_subscriptions,
-    get_subscribers_for_event
+    get_subscribers_for_event,
+    record_seen_namespace,
+    get_cached_namespaces
 )
 
 logging.basicConfig(
@@ -51,6 +53,8 @@ BOT_COMMANDS = [
     {"command": "sub", "description": "Đăng ký nhận thông báo (vd: /sub owlla-dev)"},
     {"command": "unsub", "description": "Hủy nhận thông báo namespace"},
     {"command": "list", "description": "Danh sách namespace đang theo dõi"},
+    {"command": "namespaces", "description": "Xem danh sách namespace trên ArgoCD"},
+    {"command": "ns", "description": "Xem nhanh danh sách namespace"},
     {"command": "myid", "description": "Xem Chat ID và Topic ID của nhóm"},
     {"command": "help", "description": "Xem hướng dẫn chi tiết"},
     {"command": "ping", "description": "Kiểm tra kết nối của bot"},
@@ -109,12 +113,46 @@ async def send_telegram_message(
         return False
 
 
+async def get_argocd_namespaces() -> Dict[str, List[str]]:
+    """Lấy danh sách các namespace và danh sách app từ K8s in-cluster API hoặc cache database."""
+    token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    if os.path.exists(token_file):
+        try:
+            with open(token_file, "r") as f:
+                token = f.read().strip()
+            url = "https://kubernetes.default.svc/apis/argoproj.io/v1alpha1/namespaces/argocd/applications"
+            async with httpx.AsyncClient(verify=ca_file, timeout=6.0) as client:
+                resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    result: Dict[str, List[str]] = {}
+                    for item in data.get("items", []):
+                        app_name = item.get("metadata", {}).get("name", "")
+                        ns = (item.get("spec", {}).get("destination", {}).get("namespace") or "default").strip().lower()
+                        result.setdefault(ns, []).append(app_name)
+                        record_seen_namespace(ns, app_name)
+                    return dict(sorted(result.items()))
+        except Exception as e:
+            logger.warning(f"Could not query K8s API directly: {e}")
+
+    # Fallback: đọc từ database đã lưu lại từ các event
+    cached = get_cached_namespaces()
+    result = {}
+    for row in cached:
+        ns = row["namespace"]
+        apps = [a for a in (row["app_names"] or "").split(",") if a]
+        result[ns] = apps
+    return result
+
+
 # -------------------------------------------------------------
 # Telegram Bot Command Processing
 # -------------------------------------------------------------
 HELP_TEXT = """🤖 <b>ArgoCD Notification Bot (ih1)</b>
 
 <b>Danh sách lệnh:</b>
+• <code>/namespaces</code> (hoặc <code>/ns</code>) : Xem các namespace đang có trên ArgoCD.
 • <code>/sub &lt;namespace&gt;</code> : Đăng ký nhận toàn bộ thông báo của namespace.
 • <code>/sub &lt;namespace&gt; failed</code> : Chỉ nhận thông báo khi deploy thất bại/lỗi.
 • <code>/sub all</code> : Nhận thông báo của <b>tất cả</b> namespaces (DevOps).
@@ -125,6 +163,7 @@ HELP_TEXT = """🤖 <b>ArgoCD Notification Bot (ih1)</b>
 • <code>/ping</code> : Kiểm tra bot còn hoạt động không.
 
 <i>Ví dụ:</i>
+<code>/namespaces</code>
 <code>/sub owlla-dev</code>
 <code>/sub medguard-dev failed</code>
 """
@@ -217,6 +256,30 @@ async def process_telegram_message(message: Dict[str, Any]):
         
         await send_telegram_message(chat_id, "\n".join(lines), thread_id)
 
+    elif cmd in ["/namespaces", "/ns"]:
+        ns_map = await get_argocd_namespaces()
+        if not ns_map:
+            await send_telegram_message(
+                chat_id,
+                "ℹ️ <b>Chưa có dữ liệu namespace từ ArgoCD.</b>\n<i>(Khi có event sync đầu tiên hoặc cấp quyền đọc K8s, bot sẽ tự động cập nhật danh sách).</i>",
+                thread_id
+            )
+            return
+
+        lines = [f"🏷️ <b>Danh sách Namespaces trên ArgoCD ({len(ns_map)}):</b>\n"]
+        for ns, apps in ns_map.items():
+            if apps:
+                app_count = len(apps)
+                preview = ", ".join(apps[:3])
+                if len(apps) > 3:
+                    preview += f", +{len(apps)-3}..."
+                lines.append(f"• <code>{html.escape(ns)}</code> ({app_count} apps: <i>{html.escape(preview)}</i>)")
+            else:
+                lines.append(f"• <code>{html.escape(ns)}</code>")
+
+        lines.append("\n💡 <i>Gõ <code>/sub &lt;namespace&gt;</code> để đăng ký nhận thông báo.</i>")
+        await send_telegram_message(chat_id, "\n".join(lines), thread_id)
+
 
 # -------------------------------------------------------------
 # Background Telegram Long-Polling Loop
@@ -295,6 +358,9 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
     phase = payload.phase or ""
 
     logger.info(f"Received ArgoCD event: app={app_name}, namespace={namespace}, sync={sync_status}, health={health_status}")
+
+    # Ghi nhận namespace và app_name vào cache
+    record_seen_namespace(namespace, app_name)
 
     # Xác định mức độ nghiêm trọng
     is_failed = False

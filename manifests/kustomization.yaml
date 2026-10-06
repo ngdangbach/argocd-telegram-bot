@@ -4,6 +4,7 @@ kind: Kustomization
 namespace: argocd
 
 resources:
+  - rbac.yaml
   - pvc.yaml
   - secret.yaml
   - service.yaml

@@ -96,6 +96,7 @@ Sau khi thêm Bot vào Group Telegram hoặc Forum Topic:
 
 | Lệnh | Ý nghĩa | Ví dụ |
 |---|---|---|
+| `/namespaces` (hoặc `/ns`) | Liệt kê tất cả các namespace đang có trên ArgoCD (kèm số app) | `/namespaces` |
 | `/sub <namespace>` | Nhận toàn bộ thông báo (thành công + thất bại) của namespace | `/sub owlla-dev` |
 | `/sub <namespace> failed` | **Chỉ** nhận thông báo khi deploy thất bại hoặc health degraded | `/sub owlla-dev failed` |
 | `/sub all` | Nhận thông báo của **tất cả** các namespaces (Dành cho DevOps) | `/sub all` |

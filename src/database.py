@@ -33,6 +33,13 @@ def init_db():
     CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_sub 
     ON subscriptions (chat_id, COALESCE(thread_id, 0), namespace);
     """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS seen_namespaces (
+        namespace TEXT PRIMARY KEY,
+        app_names TEXT,
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
     conn.commit()
     conn.close()
     logger.info("Database initialized successfully at %s", DB_PATH)
@@ -153,3 +160,52 @@ def get_subscribers_for_event(namespace: str, is_failed: bool) -> List[Dict[str,
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def record_seen_namespace(namespace: str, app_name: Optional[str] = None):
+    """Ghi nhận namespace và app_name khi nhận event từ ArgoCD."""
+    if not namespace:
+        return
+    ns = namespace.strip().lower()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Lấy danh sách app hiện có nếu có
+        cursor.execute("SELECT app_names FROM seen_namespaces WHERE namespace = ?", (ns,))
+        row = cursor.fetchone()
+        apps = set()
+        if row and row["app_names"]:
+            apps = set(filter(None, row["app_names"].split(",")))
+        if app_name:
+            apps.add(app_name.strip())
+        
+        apps_str = ",".join(sorted(apps))
+        cursor.execute("""
+        INSERT INTO seen_namespaces (namespace, app_names, last_seen)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(namespace) DO UPDATE SET
+            app_names = excluded.app_names,
+            last_seen = CURRENT_TIMESTAMP;
+        """, (ns, apps_str))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error recording seen namespace: {e}")
+    finally:
+        conn.close()
+
+
+def get_cached_namespaces() -> List[Dict[str, Any]]:
+    """Lấy danh sách các namespace đã ghi nhận."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+        SELECT namespace, app_names, last_seen
+        FROM seen_namespaces
+        ORDER BY namespace ASC;
+        """)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+

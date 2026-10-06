@@ -17,9 +17,12 @@ spec:
       labels:
         app: argocd-telegram-bot
     spec:
+      serviceAccountName: argocd-telegram-bot
+      imagePullSecrets:
+        - name: ghcr-credentials
       containers:
         - name: bot
-          image: ghcr.io/thinklabsdev/argocd-telegram-bot:latest
+          image: ghcr.io/ngdangbach/argocd-telegram-bot:sha-f6ae122
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
