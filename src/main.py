@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import html
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
@@ -191,16 +191,25 @@ async def get_synced_pods(app_name: str, namespace: str, error_message: Optional
             token = f.read().strip()
         headers = {"Authorization": f"Bearer {token}"}
 
-        # 1. Truy vấn Application từ ArgoCD để lấy danh sách workload vừa được sync
+        # 1. Truy vấn Application từ ArgoCD để lấy danh sách workload vừa được sync và thời điểm sync
         argo_url = f"https://kubernetes.default.svc/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/{app_name}"
         changed_workloads = []
         all_workloads = []
+        sync_time: Optional[datetime] = None
 
         async with httpx.AsyncClient(verify=ca_file, timeout=5.0) as client:
             resp = await client.get(argo_url, headers=headers)
             if resp.status_code == 200:
                 app_data = resp.json()
-                sync_res = app_data.get("status", {}).get("operationState", {}).get("syncResult", {}).get("resources", [])
+                op_state = app_data.get("status", {}).get("operationState", {})
+                started_at_str = op_state.get("startedAt")
+                if started_at_str:
+                    try:
+                        sync_time = datetime.fromisoformat(started_at_str.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+
+                sync_res = op_state.get("syncResult", {}).get("resources", [])
                 if not sync_res:
                     sync_res = app_data.get("status", {}).get("resources", [])
 
@@ -218,7 +227,6 @@ async def get_synced_pods(app_name: str, namespace: str, error_message: Optional
                                 changed_workloads.append(name)
 
             # Ưu tiên lấy những workload thực sự thay đổi trong lần sync này.
-            # Nếu tất cả đều "unchanged" (ví dụ manual sync không đổi manifest), mới lấy all_workloads
             target_workloads = changed_workloads if changed_workloads else all_workloads
             if not target_workloads:
                 return []
@@ -234,11 +242,19 @@ async def get_synced_pods(app_name: str, namespace: str, error_message: Optional
             if resp_pod.status_code == 200:
                 pod_data = resp_pod.json()
                 all_pods = []
+                pod_created_times = {}
+
                 for p in pod_data.get("items", []):
                     p_name = p.get("metadata", {}).get("name", "")
                     phase = p.get("status", {}).get("phase", "")
                     if p_name and phase in ["Running", "Pending", "ContainerCreating", "CrashLoopBackOff"]:
                         all_pods.append(p_name)
+                        created_str = p.get("metadata", {}).get("creationTimestamp", "")
+                        if created_str:
+                            try:
+                                pod_created_times[p_name] = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                            except Exception:
+                                pass
 
                 # Nếu có thông báo lỗi chỉ đích danh 1 pod (vd: "in pod backend-dev-6bc58b755c-hgs8p")
                 if error_message:
@@ -254,6 +270,17 @@ async def get_synced_pods(app_name: str, namespace: str, error_message: Optional
                             if p not in matched_pods:
                                 matched_pods.append(p)
                             break
+
+                # Lọc theo thời gian tạo: nếu có pod mới được sinh ra trong đợt sync này
+                # (tính từ 5 phút trước khi sync_time bắt đầu), chỉ lấy những pod mới tạo đó
+                if sync_time:
+                    threshold = sync_time - timedelta(minutes=5)
+                    recently_created_pods = [
+                        p for p in matched_pods 
+                        if p in pod_created_times and pod_created_times[p] >= threshold
+                    ]
+                    if recently_created_pods:
+                        return sorted(recently_created_pods)
 
                 return sorted(matched_pods)
     except Exception as e:

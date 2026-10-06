@@ -25,23 +25,26 @@ data:
             "project": {{ .app.spec.project | toJson }},
             "sync_status": {{ .app.status.sync.status | toJson }},
             "health_status": {{ .app.status.health.status | toJson }},
-            "revision": {{ .app.status.sync.revision | toJson }},
-            "message": {{ .app.status.operationState.message | toJson }},
-            "phase": {{ .app.status.operationState.phase | toJson }}
+            "revision": {{ if and .app.status.operationState .app.status.operationState.syncResult }}{{ .app.status.operationState.syncResult.revision | toJson }}{{ else }}{{ .app.status.sync.revision | toJson }}{{ end }},
+            "message": {{ if .app.status.operationState }}{{ .app.status.operationState.message | toJson }}{{ else }}""{{ end }},
+            "phase": {{ if .app.status.operationState }}{{ .app.status.operationState.phase | toJson }}{{ else }}""{{ end }}
           }
 
   # 3. Triggers kích hoạt khi deploy xong hoặc lỗi
+  # Chỉ trigger on-deployed khi chính ứng dụng đó vừa được sync thành công (syncResult.revision khớp với sync.revision)
   trigger.on-deployed: |
-    - when: app.status.operationState != nil and app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
-      oncePer: app.status.sync.revision
+    - when: app.status.operationState != nil and app.status.operationState.syncResult != nil and app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy' and app.status.operationState.syncResult.revision == app.status.sync.revision
+      oncePer: app.status.operationState.syncResult.revision
       send: [app-deployed]
 
   trigger.on-sync-failed: |
     - when: app.status.operationState != nil and app.status.operationState.phase in ['Error', 'Failed']
+      oncePer: app.status.operationState.startedAt
       send: [app-deployed]
 
   trigger.on-health-degraded: |
     - when: app.status.health.status == 'Degraded'
+      oncePer: app.status.health.status + app.status.sync.revision
       send: [app-deployed]
 
   # 4. Global Subscriptions gửi toàn bộ sự kiện tới webhook để Bot tự xử lý lọc namespace
