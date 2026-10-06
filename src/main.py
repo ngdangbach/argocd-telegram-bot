@@ -47,6 +47,9 @@ class ArgoWebhookPayload(BaseModel):
     revision: Optional[str] = ""
     message: Optional[str] = ""
     trigger: Optional[str] = ""
+    pod_name: Optional[str] = None
+    pod: Optional[str] = None
+    pods: Optional[Any] = None
 
 
 BOT_COMMANDS = [
@@ -146,6 +149,45 @@ async def get_argocd_namespaces() -> Dict[str, List[str]]:
     return result
 
 
+async def get_pods_for_app(namespace: str, app_name: Optional[str] = None) -> List[str]:
+    """Lấy danh sách các Pod đang chạy trong namespace của ứng dụng."""
+    token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    if not os.path.exists(token_file) or not namespace:
+        return []
+
+    try:
+        with open(token_file, "r") as f:
+            token = f.read().strip()
+        url = f"https://kubernetes.default.svc/api/v1/namespaces/{namespace}/pods"
+        async with httpx.AsyncClient(verify=ca_file, timeout=4.0) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            if resp.status_code == 200:
+                data = resp.json()
+                all_pods = []
+                matched_pods = []
+                app_clean = (app_name or "").lower().replace("-dev", "").replace("-prod", "").replace("-staging", "")
+
+                for item in data.get("items", []):
+                    p_name = item.get("metadata", {}).get("name", "")
+                    if not p_name:
+                        continue
+                    phase = item.get("status", {}).get("phase", "")
+                    if phase not in ["Running", "Pending", "CrashLoopBackOff"]:
+                        continue
+
+                    all_pods.append(p_name)
+                    # Ưu tiên các pod có tên khớp với app_name
+                    if app_name and (app_name.lower() in p_name.lower() or (app_clean and app_clean in p_name.lower())):
+                        matched_pods.append(p_name)
+
+                result = matched_pods if matched_pods else all_pods
+                return sorted(result)
+    except Exception as e:
+        logger.warning(f"Error fetching pods for namespace {namespace}: {e}")
+    return []
+
+
 # -------------------------------------------------------------
 # Telegram Bot Command Processing
 # -------------------------------------------------------------
@@ -155,7 +197,7 @@ HELP_TEXT = """🤖 <b>ArgoCD Notification Bot (ih1)</b>
 • <code>/namespaces</code> (hoặc <code>/ns</code>) : Xem các namespace đang có trên ArgoCD.
 • <code>/sub &lt;namespace&gt;</code> : Đăng ký nhận toàn bộ thông báo của namespace.
 • <code>/sub &lt;namespace&gt; failed</code> : Chỉ nhận thông báo khi deploy thất bại/lỗi.
-• <code>/sub all</code> : Nhận thông báo của <b>tất cả</b> namespaces.
+• <code>/sub all</code> : Nhận thông báo của <b>tất cả</b> namespaces (DevOps).
 • <code>/unsub &lt;namespace&gt;</code> : Hủy nhận thông báo của namespace.
 • <code>/unsub all</code> : Hủy toàn bộ đăng ký trong chat này.
 • <code>/list</code> : Xem các namespace chat/topic này đang theo dõi.
@@ -382,6 +424,21 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
         header_icon = "🔄"
         status_title = f"CẬP NHẬT TRẠNG THÁI ({sync_status})"
 
+    # Lấy thông tin Pods từ payload hoặc tự động query K8s API
+    pod_list = []
+    if payload.pod_name:
+        pod_list.append(str(payload.pod_name).strip())
+    elif payload.pod:
+        pod_list.append(str(payload.pod).strip())
+    elif payload.pods:
+        if isinstance(payload.pods, list):
+            pod_list.extend([str(p).strip() for p in payload.pods if p])
+        elif isinstance(payload.pods, str):
+            pod_list.extend([p.strip() for p in payload.pods.split(",") if p.strip()])
+
+    if not pod_list and namespace:
+        pod_list = await get_pods_for_app(namespace, app_name)
+
     # Format message HTML
     short_rev = revision[:7] if len(revision) >= 7 else revision
     argo_app_url = f"{ARGOCD_URL}/applications/{app_name}"
@@ -391,9 +448,22 @@ async def handle_argocd_webhook(payload: ArgoWebhookPayload):
         "",
         f"📦 <b>Ứng dụng:</b> <code>{html.escape(app_name)}</code>",
         f"🏷 <b>Namespace:</b> <code>{html.escape(namespace)}</code>",
+    ]
+
+    if pod_list:
+        if len(pod_list) == 1:
+            lines.append(f"🐳 <b>Pod:</b> <code>{html.escape(pod_list[0])}</code>")
+        elif len(pod_list) <= 3:
+            pods_formatted = ", ".join([f"<code>{html.escape(p)}</code>" for p in pod_list])
+            lines.append(f"🐳 <b>Pods:</b> {pods_formatted}")
+        else:
+            pods_formatted = ", ".join([f"<code>{html.escape(p)}</code>" for p in pod_list[:3]])
+            lines.append(f"🐳 <b>Pods:</b> {pods_formatted} <i>(+{len(pod_list)-3} pods)</i>")
+
+    lines.extend([
         f"📁 <b>Project:</b> <code>{html.escape(project)}</code>",
         f"⚙️ <b>Sync:</b> <code>{html.escape(sync_status)}</code> | 🩺 <b>Health:</b> <code>{html.escape(health_status)}</code>"
-    ]
+    ])
 
     if short_rev:
         lines.append(f"🔖 <b>Commit:</b> <code>{html.escape(short_rev)}</code>")

@@ -7,13 +7,19 @@ metadata:
     app: argocd-telegram-bot
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: argocd-telegram-bot-reader
-  namespace: argocd
   labels:
     app: argocd-telegram-bot
 rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
   - apiGroups:
       - argoproj.io
     resources:
@@ -24,10 +30,9 @@ rules:
       - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: argocd-telegram-bot-reader-binding
-  namespace: argocd
   labels:
     app: argocd-telegram-bot
 subjects:
@@ -35,6 +40,6 @@ subjects:
     name: argocd-telegram-bot
     namespace: argocd
 roleRef:
-  kind: Role
+  kind: ClusterRole
   name: argocd-telegram-bot-reader
   apiGroup: rbac.authorization.k8s.io
