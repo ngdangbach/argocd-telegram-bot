@@ -271,18 +271,26 @@ async def get_synced_pods(app_name: str, namespace: str, error_message: Optional
                                 matched_pods.append(p)
                             break
 
-                # Lọc theo thời gian tạo: nếu có pod mới được sinh ra trong đợt sync này
-                # (tính từ 5 phút trước khi sync_time bắt đầu), chỉ lấy những pod mới tạo đó
+                # Lọc theo thời gian tạo: chỉ lấy những pod thực sự được tạo mới trong đợt sync này.
+                # Nếu có sync_time từ ArgoCD, lấy pod sinh ra từ sync_time (-30s trễ mạng).
+                # Nếu không có sync_time, lấy pod sinh ra trong vòng 5 phút gần nhất.
+                now = datetime.now(timezone.utc)
                 if sync_time:
-                    threshold = sync_time - timedelta(minutes=5)
-                    recently_created_pods = [
-                        p for p in matched_pods 
-                        if p in pod_created_times and pod_created_times[p] >= threshold
-                    ]
-                    if recently_created_pods:
-                        return sorted(recently_created_pods)
+                    threshold = sync_time - timedelta(seconds=30)
+                else:
+                    threshold = now - timedelta(minutes=5)
 
-                return sorted(matched_pods)
+                recently_created_pods = [
+                    p for p in matched_pods 
+                    if p in pod_created_times and pod_created_times[p] >= threshold
+                ]
+                if recently_created_pods:
+                    return sorted(recently_created_pods)
+
+                # Nếu không có pod nào mới tạo trong khoảng thời gian này
+                # (ví dụ: sync ConfigMap, Ingress, Secret hoặc kiểm tra cấu hình mà không đổi pod),
+                # trả về rỗng thay vì nhè toàn bộ pod cũ ra để tránh hiển thị sai lệch.
+                return []
     except Exception as e:
         logger.warning(f"Error getting synced pods for app {app_name} in {namespace}: {e}")
     return []
