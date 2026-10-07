@@ -262,34 +262,32 @@ async def get_synced_pods(app_name: str, namespace: str, error_message: Optional
                         if p.lower() in error_message.lower():
                             return [p]
 
-                # Ghép workload vừa sync với pod thực tế tương ứng
-                matched_pods = []
-                for w in target_workloads:
-                    for p in all_pods:
-                        if p.startswith(f"{w}-"):
-                            if p not in matched_pods:
-                                matched_pods.append(p)
-                            break
-
-                # Lọc theo thời gian tạo: chỉ lấy những pod thực sự được tạo mới trong đợt sync này.
-                # Nếu có sync_time từ ArgoCD, lấy pod sinh ra từ sync_time (-30s trễ mạng).
-                # Nếu không có sync_time, lấy pod sinh ra trong vòng 5 phút gần nhất.
+                # Với mỗi workload được sync, tìm pod MỚI NHẤT của workload đó.
+                # Cách này khắc phục triệt để lỗi:
+                # 1. Nhặt nhầm pod cũ nếu có nhiều pod cùng tồn tại trong quá trình rollout.
+                # 2. Ngưỡng thời gian quá hẹp (tăng lên 15 phút nếu thiếu sync_time để đủ thời gian pull image).
                 now = datetime.now(timezone.utc)
                 if sync_time:
-                    threshold = sync_time - timedelta(seconds=30)
+                    threshold = sync_time - timedelta(seconds=60)
                 else:
-                    threshold = now - timedelta(minutes=5)
+                    threshold = now - timedelta(minutes=15)
 
-                recently_created_pods = [
-                    p for p in matched_pods 
-                    if p in pod_created_times and pod_created_times[p] >= threshold
-                ]
-                if recently_created_pods:
-                    return sorted(recently_created_pods)
+                candidate_pods = []
+                for w in target_workloads:
+                    # Lấy tất cả pod thuộc workload này
+                    matching_pods = [p for p in all_pods if p.startswith(f"{w}-")]
+                    for p in matching_pods:
+                        # Lấy tất cả các pod thực sự được tạo trong đợt deploy này (kể cả replicas >= 2)
+                        if pod_created_times.get(p) and pod_created_times[p] >= threshold:
+                            if p not in candidate_pods:
+                                candidate_pods.append(p)
+
+                if candidate_pods:
+                    return sorted(candidate_pods)
 
                 # Nếu không có pod nào mới tạo trong khoảng thời gian này
                 # (ví dụ: sync ConfigMap, Ingress, Secret hoặc kiểm tra cấu hình mà không đổi pod),
-                # trả về rỗng thay vì nhè toàn bộ pod cũ ra để tránh hiển thị sai lệch.
+                # trả về rỗng để bot không hiển thị mục Pods đã cập nhật gây hiểu lầm.
                 return []
     except Exception as e:
         logger.warning(f"Error getting synced pods for app {app_name} in {namespace}: {e}")
